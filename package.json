@@ -1,0 +1,45 @@
+{
+  "name": "certificate_verification",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@metamask/onboarding": "^1.0.1",
+    "@truffle/hdwallet-provider": "^2.1.15",
+    "axios": "^1.7.9",
+    "cra-template": "1.2.0",
+    "crypto-js": "^4.2.0",
+    "ganache": "^7.9.2",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-router-dom": "^7.1.5",
+    "react-scripts": "5.0.1",
+    "web-vitals": "^4.2.4",
+    "web3": "^4.16.0"
+  },
+  "scripts": {
+    "start": "concurrently \"npm run react-start\" \"npm run backend\"",
+    "react-start": "react-scripts start",
+    "backend": "cd backend && nodemon --exec python app.py"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
