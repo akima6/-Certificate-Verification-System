@@ -3,11 +3,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import Web3 from 'web3';
 import axios from 'axios';
 import MetaMaskOnboarding from '@metamask/onboarding';
-import contractABI from "../contractABI";
 import "./admin.css";
 
 const Admin = () => {
-  const [web3, setWeb3] = useState(null);
   const [userAddress, setUserAddress] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -19,16 +17,32 @@ const Admin = () => {
   const [metadataHash, setMetadataHash] = useState('');
   const [transactionHash, setTransactionHash] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [contract, setContract] = useState(null);
   const [fileName, setFileName] = useState('');
   const fileInputRef = useRef(null);
+  const [contractABI, setContractABI] = useState(null);
+  const [contractAddress, setContractAddress] = useState('');
+  const [predefinedAdminAddress, setPredefinedAdminAddress] = useState('');
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [web3, setWeb3] = useState(null);
+  const [contract, setContract] = useState(null);
 
-  const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-  const pinataSecretApiKey = process.env.REACT_APP_PINATA_SECRET_API_KEY;
-  const predefinedAdminAddress = process.env.REACT_APP_ADMIN_ADDRESS;
-  const contractAddress = process.env.REACT_APP_CONTRACT_ADDRESS;
 
   const onboarding = new MetaMaskOnboarding();
+
+  const handleAccountsChanged = (accounts) => {
+    if (accounts.length === 0) {
+      setUserAddress('');
+      setIsAdmin(false);
+    } else {
+      setUserAddress(accounts[0]);
+      verifyAdmin(accounts[0]);
+    }
+    setIsLoading(false);
+  };
+
+  const verifyAdmin = (address) => {
+    setIsAdmin(address.toLowerCase() === predefinedAdminAddress.toLowerCase());
+  };
 
   const truncateAddress = (address) => {
     if (!address) return '';
@@ -41,46 +55,84 @@ const Admin = () => {
   };
 
   useEffect(() => {
-    const initializeWeb3 = async () => {
-      if (!window.ethereum) {
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    return () => {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+    };
+}, []); // Include dependency
+
+
+  useEffect(() => {
+    const fetchContractConfig = async () => {
+      try {
+        // Fetch config from backend
+        const configResponse = await axios.get('http://localhost:5000/api/config');
+        setContractAddress(configResponse.data.contractAddress);
+        setPredefinedAdminAddress(configResponse.data.adminAddress);
+  
+        // Fetch ABI from backend
+        const abiResponse = await axios.get('http://localhost:5000/api/abi');
+        setContractABI(abiResponse.data);
+        
+        setConfigLoaded(true); // Set config as loaded after fetching
+      } catch (error) {
+        console.error('Error loading contract config:', error);
         setIsLoading(false);
-        return;
       }
+    };
+  
+    fetchContractConfig(); // Fetch contract config first
+  }, []); // Runs only once on mount
+  
+  useEffect(() => {
+    if (!configLoaded || !window.ethereum) {
+      setIsLoading(false);
+      return;
+    }
+  
+    const initializeWeb3 = async () => {
       try {
         const web3Instance = new Web3(window.ethereum);
         setWeb3(web3Instance);
-        const accounts = await web3Instance.eth.getAccounts();
-        handleAccountsChanged(accounts);
-        window.ethereum.on('accountsChanged', handleAccountsChanged);
-        window.ethereum.on('chainChanged', () => window.location.reload());
-
-        // Initialize contract after Web3 instance is ready
+  
+        // Ensure contractABI and contractAddress are available
+        if (!contractABI || !contractAddress) {
+          console.error('Contract ABI or address missing');
+          return;
+        }
+  
+        // Initialize contract
         const contractInstance = new web3Instance.eth.Contract(contractABI, contractAddress);
         setContract(contractInstance);
+  
+        const accounts = await web3Instance.eth.getAccounts();
+        handleAccountsChanged(accounts);
+  
+        // Set up Ethereum event listeners
+        window.ethereum.on('accountsChanged', handleAccountsChanged);
+        window.ethereum.on('chainChanged', () => window.location.reload());
+  
       } catch (error) {
-        console.error('Error initializing Web3:', error);
+        console.error('Web3 initialization failed:', error);
         setIsLoading(false);
       }
     };
-
-    const handleAccountsChanged = (accounts) => {
-      if (accounts.length === 0) {
-        setUserAddress('');
-        setIsAdmin(false);
-      } else {
-        setUserAddress(accounts[0]);
-        verifyAdmin(accounts[0]);
-      }
-      setIsLoading(false);
-    };
-
-    const verifyAdmin = (address) => {
-      setIsAdmin(address.toLowerCase() === predefinedAdminAddress.toLowerCase());
-    };
-
-    initializeWeb3();
-  }, [predefinedAdminAddress]);
-
+  
+    initializeWeb3(); // Initialize Web3 only when config is loaded
+  }, [configLoaded, contractABI, contractAddress]); // Only run when dependencies change
+  
+ 
+  
+  // Add this loader state return
+  if (!configLoaded) {
+    return (
+      <div className="loading-container">
+        <div className="loader"></div>
+        <p>Loading blockchain configuration...</p>
+      </div>
+    );
+  }
+  
   const handleFileChange = (event) => {
     const file = event.target.files[0];
     if (file) {
@@ -134,88 +186,96 @@ const Admin = () => {
 
     setIsProcessing(true);
     setUploadStatus('Uploading to IPFS...');
-    setStatusType('processing');
-    const formData = new FormData();
-    formData.append('file', selectedFile);
+    setStatusType('processing'); 
 
     try {
-      const ipfsResponse = await axios.post(
-        "https://api.pinata.cloud/pinning/pinFileToIPFS", 
-        formData, 
-        {
-          headers: {
-            'pinata_api_key': pinataApiKey,
-            'pinata_secret_api_key': pinataSecretApiKey
-          }
-        }
-      );
-
-      console.log("IPFS Response:", ipfsResponse.data);
-      setCid(ipfsResponse.data.IpfsHash);
-      setUploadStatus('File uploaded to IPFS successfully!');
-      setStatusType('success');
-    } catch (error) {
-      console.error("Error uploading to IPFS:", error);
-      setUploadStatus('Failed to upload file to IPFS.');
-      setStatusType('error');
-    }
-    setIsProcessing(false);
-  };
-
-  const storeOnBlockchain = async () => {
-    if (!metadataHash || !cid) {
-      alert("Missing metadata hash or CID");
-      return;
-    }
-    setIsProcessing(true);
-    setUploadStatus("Sending to Blockchain...");
-    setStatusType('processing');
-    
-    try {
-      if (!contract) {
-        alert("Smart contract is not initialized");
-        return;
-      }
-
-      // Convert to bytes32 format (add 0x prefix)
-      const bytes32Hash = web3.utils.toHex(metadataHash);
-  
-      // Send the transaction to the smart contract
-      const receipt = await contract.methods.storeCertificate(cid, bytes32Hash)
-        .send({ 
-          from: userAddress, 
-          gas: 5000000 
+      const reader = new FileReader();
+      reader.readAsDataURL(selectedFile);
+      reader.onloadend = async () => {
+        const response = await axios.post('http://127.0.0.1:5000/api/upload-ipfs', {
+          file: reader.result,
+          filename: selectedFile.name,
+          filetype: selectedFile.type
         });
-  
-      console.log('Transaction successful:', receipt);
-      setTransactionHash(receipt.transactionHash);
-      setUploadStatus("Stored on Blockchain successfully!");
-      setStatusType('success');
+        
+        setCid(response.data.cid);
+        setUploadStatus('File uploaded to IPFS successfully!');
+        setStatusType('success');
+      };
     } catch (error) {
-      console.error('Transaction failed:', error);
-      let errorMessage = "Certificate already exists on blockchain";
-
-      // Extract meaningful error message
-      if (error.message.includes('revert')) {
-        if (error.message.includes('Certificate already exists')) {
-          errorMessage = "Certificate already exists on blockchain";
-        } else if (error.message.includes('Not authorized')) {
-          errorMessage = "Only admin can store certificates";
-        }
-      } else if (error.code === 'INSUFFICIENT_GAS') {
-        errorMessage = "Transaction ran out of gas";
-      } else if (error.code === 4001) {
-        errorMessage = "Transaction rejected by user";
-      }
-
-      // Update status with specific error
-      setUploadStatus(errorMessage);
+      console.error("IPFS upload failed:", error);
+      setUploadStatus('Failed to upload file to IPFS.');
       setStatusType('error');
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const storeOnBlockchain = async () => {
+    if (!metadataHash || !cid) {
+        alert("Missing metadata hash or CID");
+        return;
+    }
+
+    setIsProcessing(true);
+    setUploadStatus("Sending to Blockchain...");
+    setStatusType("processing");
+
+    try {
+        if (!window.ethereum) {
+            alert("MetaMask is not installed!");
+            return;
+        }
+
+        const web3 = new Web3(window.ethereum);
+        await window.ethereum.request({ method: "eth_requestAccounts" });
+
+        const accounts = await web3.eth.getAccounts();
+        const adminAddress = accounts[0];
+
+        // Convert metadataHash to bytes32 format
+        const formattedMetadataHash = web3.utils.soliditySha3(metadataHash);
+
+        const contract = new web3.eth.Contract(contractABI, contractAddress);
+        const txnData = contract.methods.storeCertificate(cid, formattedMetadataHash).encodeABI();
+
+        // Build transaction object correctly
+        const txn = {
+            from: adminAddress,
+            to: contractAddress,
+            gas: web3.utils.toHex(5000000),
+            data: txnData,
+        };
+
+        // Send transaction using web3
+        const txReceipt = await web3.eth.sendTransaction(txn);
+
+        console.log("Transaction successful:", txReceipt.transactionHash);
+
+        // Send transaction hash to backend for verification/storage
+        const response = await axios.post("http://127.0.0.1:5000/store_on_blockchain", {
+            txHash: txReceipt.transactionHash,
+            metadataHash: formattedMetadataHash,
+            cid,
+        });
+
+        if (response.data.success) {
+            setTransactionHash(txReceipt.transactionHash);
+            setUploadStatus("Stored on Blockchain successfully!");
+            setStatusType("success");
+        } else {
+            throw new Error(response.data.error || "Transaction verification failed");
+        }
+    } catch (error) {
+        console.error("Transaction failed:", error);
+        setUploadStatus("Certificate already exists on the blockchain!");
+        setStatusType("error");
+    } finally {
+        setIsProcessing(false);
+    }
+};
+
+  
   const renderMetadataTable = () => {
     if (!extractedDetails) return null;
     
