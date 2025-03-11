@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import axios from 'axios';
 import './user.css';
@@ -148,14 +149,14 @@ const User = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(extractedDetails)
-                    .filter(([key]) => key !== 'metadata_hash')
-                    .map(([key, value]) => (
-                      <tr key={key}>
-                        <td className="field-name">{key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')}</td>
-                        <td className="field-value">{value}</td>
-                      </tr>
-                    ))}
+                {['name', 'register_number', 'college', 'passing_date', 'cgpa']
+                  .filter(key => extractedDetails[key]) // Ensure only existing fields are displayed
+                  .map(key => (
+                  <tr key={key}>
+                  <td className="field-name">{key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')}</td>
+                  <td className="field-value">{extractedDetails[key]}</td>
+                  </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
