@@ -1,3 +1,4 @@
+
 # Import required libraries
 from flask import Flask, request, jsonify, session  # Flask web framework components
 from flask_cors import CORS  # Handle Cross-Origin Resource Sharing
@@ -73,56 +74,63 @@ def extract_text_from_pdf(pdf_path):
         app.logger.error(f"PDF extraction error: {str(e)}")
         return ""
 
+
+
+
 def extract_certificate_details(text):
     """Extract structured data from certificate text using regex patterns"""
     details = {}
     try:
-        # Name extraction pattern (handles titles like Mr/Ms)
+        # Name extraction (completely removes 'Mr.', 'Ms.', 'Mrs.')
         name_match = re.search(
-            r"Certified that\s+(?:Mr\.?|Ms\.?|Mrs\.?)?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,2})",
+            r"Certified that\s+(?:Mr\.?|Ms\.?|Mrs\.?)?\s*([\w\s'-]+?)(?=\s+has\s+passed)",
             text, 
             re.IGNORECASE
         )
         
-        # Registration number pattern (alphanumeric 8-12 characters)
+        # Registration number pattern (handles spaces or separators)
         register_number_match = re.search(
-            r"Register\s*Number\s*[:\-]?\s*([A-Z0-9]{8,12})",
+            r"Register\s*Number\s*[:\-]?\s*([\w\d-]+)",
             text,
             re.IGNORECASE
         )
         
-        # Date pattern (Month-Year format)
+        # Date pattern (Handles Month-Year format)
         passing_date_match = re.search(
-            r"(?:Month\s*&\s*Year\s*of\s*Passing|Date\s*of\s*Passing)\s*[:\-]?\s*([A-Z]+-\d{4})",
+            r"(?:Month\s*&\s*Year\s*of\s*Passing|Date\s*of\s*Passing)\s*[:\-]?\s*([\w-]+)",
             text,
             re.IGNORECASE
         )
         
-        # College name pattern (2-5 capitalized words)
+        # College name pattern (Stops extraction at newline or CGPA section)
         college_match = re.search(
-            r"College\s*of\s*Study\s*[:\-]?\s*((?:[A-Z][A-Za-z]+\s*){2,5})(?=\n|$)",
+            r"College\s*of\s*Study\s*[:\-]?\s*([\w\s&.,'-]+?)(?=\s*Cumulative|$)",
             text,
             re.IGNORECASE
         )
         
-        # CGPA pattern (decimal format X.XX)
+        # CGPA pattern (Handles both integers & decimals)
         cgpa_match = re.search(
-            r"Cumulative\s*Grade\s*Point\s*Average\s*\(CGPA\)\s*[:\-]?\s*(\d{1}\.\d{2})",
+            r"Cumulative\s*Grade\s*Point\s*Average\s*\(CGPA\)\s*[:\-]?\s*(\d{1,2}(?:\.\d{1,2})?)",
             text,
             re.IGNORECASE
         )
 
-        # Populate details dictionary with matches
+        # Populate details dictionary with extracted data
         details['name'] = name_match.group(1).strip() if name_match else "Not Found"
         details['register_number'] = register_number_match.group(1).strip() if register_number_match else "Not Found"
         details['passing_date'] = passing_date_match.group(1).strip() if passing_date_match else "Not Found"
         details['college'] = college_match.group(1).strip() if college_match else "Not Found"
         details['cgpa'] = cgpa_match.group(1).strip() if cgpa_match else "Not Found"
         
+        # Extra Fix: Remove "Ms" if it still appears at the start of the name
+        details['name'] = re.sub(r"^\s*(Ms\.?|Mr\.?|Mrs\.?)\s*", "", details['name'], flags=re.IGNORECASE)
+
     except Exception as e:
-        app.logger.error(f"Extraction error: {str(e)}")
+        print(f"Extraction error: {str(e)}")
     
     return details
+
 
 def generate_metadata_hash(metadata):
     """Generate SHA-256 hash of certificate metadata"""
@@ -202,7 +210,7 @@ def store_on_blockchain():
     """Store certificate metadata in blockchain"""
     try:
         data = request.json
-        metadata_hash = data.get("metadata_hash")
+        metadata_hash = data.get("metadata_hash")  # Ensure key matches frontend
         ipfs_cid = data.get("cid")
 
         # Input validation
@@ -213,33 +221,41 @@ def store_on_blockchain():
         if not re.fullmatch(r'^[a-fA-F0-9]{64}$', metadata_hash):
             return jsonify({"error": "Invalid metadata hash format"}), 400
 
-        # Validate IPFS CID length
-        if not ipfs_cid or not isinstance(ipfs_cid, str) or len(ipfs_cid) < 46:
+        # Validate IPFS CID
+        if not isinstance(ipfs_cid, str) or len(ipfs_cid) < 46:
             return jsonify({"error": "Invalid IPFS CID"}), 400
 
         try:
-            # Convert hex string to bytes for blockchain
             hash_bytes = bytes.fromhex(metadata_hash)
         except ValueError:
             return jsonify({"error": "Invalid metadata hash format"}), 400
 
-        # Blockchain transaction setup
-        nonce = web3.eth.get_transaction_count(admin_address)
-        gas_price = web3.eth.gas_price  # Current network gas price
-        estimated_gas = contract.functions.storeCertificate(ipfs_cid, hash_bytes).estimate_gas()
-        
+        # Check if certificate already exists
+        try:
+            existing_cid = contract.functions.getCertificate(hash_bytes).call()
+            if existing_cid and existing_cid.strip() != '':
+                return jsonify({"error": "Certificate already exists"}), 400
+        except web3.exceptions.ContractLogicError as e:
+            if "Certificate not found" not in str(e):
+                return jsonify({"error": f"Blockchain error: {str(e)}"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Error checking certificate: {str(e)}"}), 500
+
         # Build transaction
+        nonce = web3.eth.get_transaction_count(admin_address)
+        gas_price = web3.eth.gas_price
+        estimated_gas = contract.functions.storeCertificate(ipfs_cid, hash_bytes).estimate_gas()
+
         txn = contract.functions.storeCertificate(ipfs_cid, hash_bytes).build_transaction({
-            'chainId': web3.eth.chain_id,  # Network ID
-            'gas': estimated_gas,  # Estimated gas limit
-            'gasPrice': gas_price,  # Gas price in wei
-            'nonce': nonce,  # Transaction sequence number
+            'chainId': web3.eth.chain_id,
+            'gas': estimated_gas,
+            'gasPrice': gas_price,
+            'nonce': nonce,
         })
 
         # Sign and send transaction
         signed_txn = web3.eth.account.sign_transaction(txn, admin_private_key)
         tx_hash = web3.eth.send_raw_transaction(signed_txn.rawTransaction)
-        # Wait for transaction confirmation
         receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
 
         if receipt.status == 1:
@@ -249,15 +265,17 @@ def store_on_blockchain():
                 "block_number": receipt.blockNumber
             })
         else:
-            return jsonify({
-                "error": "Transaction failed",
-                "tx_hash": tx_hash.hex(),
-                "receipt": receipt
-            }), 500
+            # Attempt to get revert reason
+            try:
+                web3.eth.call(txn)
+            except web3.exceptions.ContractLogicError as e:
+                error_msg = str(e)
+                return jsonify({"error": f"Transaction failed: {error_msg}"}), 400
+            return jsonify({"error": "Transaction failed"}), 500
 
     except Exception as e:
-        app.logger.error(f"Error in store_on_blockchain: {str(e)}")
-        return jsonify({"error": f"Failed to store on blockchain: {str(e)}"}), 500
+        app.logger.error(f"Error storing certificate: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/verify', methods=['POST'])
 def verify_certificate():
