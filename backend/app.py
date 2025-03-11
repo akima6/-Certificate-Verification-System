@@ -1,8 +1,9 @@
 
-# Import required libraries
 from flask import Flask, request, jsonify, session  # Flask web framework components
 from flask_cors import CORS  # Handle Cross-Origin Resource Sharing
 from flask_session import Session  # Server-side session management
+from requests_toolbelt import MultipartEncoder
+from requests_toolbelt.multipart.encoder import MultipartEncoder
 import pytesseract  # OCR library for text extraction
 from PIL import Image  # Image processing
 import cv2  # OpenCV for computer vision tasks
@@ -16,6 +17,8 @@ import re  # Regular expressions
 from web3 import Web3  # Ethereum blockchain interaction
 from dotenv import load_dotenv  # Environment variables management
 import traceback  # Error stack traces
+import base64
+import io
 
 # Load environment variables from .env file
 load_dotenv()
@@ -139,6 +142,25 @@ def generate_metadata_hash(metadata):
     # Return hexadecimal digest
     return hashlib.sha256(hash_string.encode()).hexdigest()
 
+
+@app.route('/api/abi', methods=['GET'])
+def get_abi():
+    """Serve contract ABI to frontend"""
+    try:
+        with open("contract_abi.json", "r") as file:
+            return jsonify(json.load(file))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """Serve blockchain configuration to frontend"""
+    return jsonify({
+        "contractAddress": os.getenv("CONTRACT_ADDRESS"),
+        "adminAddress": os.getenv("ADMIN_ADDRESS")
+    })
+
+
 # Flask routes
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -178,123 +200,95 @@ def upload():
         traceback.print_exc()  # Print detailed error trace
         return jsonify({"error": str(e)}), 500
 
-@app.route('/upload_to_ipfs', methods=['POST'])
+@app.route('/api/upload-ipfs', methods=['POST'])
 def upload_to_ipfs():
-    """Upload certificate file to IPFS via Pinata"""
+    """Handle IPFS uploads through backend"""
     try:
-        file = request.files.get('certificate')
-        if not file:
-            return jsonify({"error": "No file selected"}), 400
-        
-        # Prepare request for Pinata API
-        files = {'file': (file.filename, file.stream, file.mimetype)}
+        data = request.json
+        if not data or not data.get('file'):
+            return jsonify({"error": "No file data provided"}), 400
+
+        # Decode base64 file
+        file_data = data['file'].split(',')[1]
+        file_bytes = base64.b64decode(file_data)
+
+        # Create proper multipart form data
+        form_data = MultipartEncoder(
+            fields={
+                'file': ('filename', io.BytesIO(file_bytes), data.get('filetype', 'application/octet-stream'))
+            }
+        )
+
         headers = {
             'pinata_api_key': PINATA_API_KEY,
-            'pinata_secret_api_key': PINATA_SECRET_KEY
+            'pinata_secret_api_key': PINATA_SECRET_KEY,
+            'Content-Type': form_data.content_type  # Required for multipart form-data
         }
-        
-        # Send to IPFS
+
         response = requests.post(
             "https://api.pinata.cloud/pinning/pinFileToIPFS",
-            files=files,
+            data=form_data,
             headers=headers
         )
-        
-        return jsonify(response.json()) if response.status_code == 200 else jsonify({"error": "IPFS upload failed"}), 500
-    
+
+        if response.status_code != 200:
+            return jsonify({"error": f"IPFS upload failed: {response.text}"}), 500
+
+        return jsonify({"cid": response.json().get("IpfsHash")})
+
     except Exception as e:
+        app.logger.error(f"IPFS upload error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/store_on_blockchain', methods=['POST'])
 def store_on_blockchain():
-    """Store certificate metadata in blockchain"""
+    """Verify and store transaction hash in backend"""
     try:
         data = request.json
-        metadata_hash = data.get("metadata_hash")  # Ensure key matches frontend
+        tx_hash = data.get("txHash")
+        metadata_hash = data.get("metadataHash")
         ipfs_cid = data.get("cid")
 
-        # Input validation
-        if not metadata_hash or not ipfs_cid:
+        if not tx_hash or not metadata_hash or not ipfs_cid:
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Validate SHA-256 hash format
-        if not re.fullmatch(r'^[a-fA-F0-9]{64}$', metadata_hash):
+        # Validate SHA-256 format (bytes32)
+        if not re.fullmatch(r'^0x[a-fA-F0-9]{64}$', metadata_hash):
             return jsonify({"error": "Invalid metadata hash format"}), 400
 
-        # Validate IPFS CID
-        if not isinstance(ipfs_cid, str) or len(ipfs_cid) < 46:
-            return jsonify({"error": "Invalid IPFS CID"}), 400
+        # Verify transaction exists on blockchain
+        receipt = web3.eth.get_transaction_receipt(tx_hash)
+        if not receipt:
+            return jsonify({"error": "Transaction not found on blockchain"}), 400
 
-        try:
-            hash_bytes = bytes.fromhex(metadata_hash)
-        except ValueError:
-            return jsonify({"error": "Invalid metadata hash format"}), 400
-
-        # Check if certificate already exists
-        try:
-            existing_cid = contract.functions.getCertificate(hash_bytes).call()
-            if existing_cid and existing_cid.strip() != '':
-                return jsonify({"error": "Certificate already exists"}), 400
-        except web3.exceptions.ContractLogicError as e:
-            if "Certificate not found" not in str(e):
-                return jsonify({"error": f"Blockchain error: {str(e)}"}), 400
-        except Exception as e:
-            return jsonify({"error": f"Error checking certificate: {str(e)}"}), 500
-
-        # Build transaction
-        nonce = web3.eth.get_transaction_count(admin_address)
-        gas_price = web3.eth.gas_price
-        estimated_gas = contract.functions.storeCertificate(ipfs_cid, hash_bytes).estimate_gas()
-
-        txn = contract.functions.storeCertificate(ipfs_cid, hash_bytes).build_transaction({
-            'chainId': web3.eth.chain_id,
-            'gas': estimated_gas,
-            'gasPrice': gas_price,
-            'nonce': nonce,
-        })
-
-        # Sign and send transaction
-        signed_txn = web3.eth.account.sign_transaction(txn, admin_private_key)
-        tx_hash = web3.eth.send_raw_transaction(signed_txn.rawTransaction)
-        receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
-
-        if receipt.status == 1:
-            return jsonify({
-                "message": "Stored on blockchain successfully",
-                "tx_hash": tx_hash.hex(),
-                "block_number": receipt.blockNumber
-            })
-        else:
-            # Attempt to get revert reason
-            try:
-                web3.eth.call(txn)
-            except web3.exceptions.ContractLogicError as e:
-                error_msg = str(e)
-                return jsonify({"error": f"Transaction failed: {error_msg}"}), 400
-            return jsonify({"error": "Transaction failed"}), 500
+        return jsonify({"success": True, "txHash": tx_hash}), 200
 
     except Exception as e:
-        app.logger.error(f"Error storing certificate: {str(e)}")
+        app.logger.error(f"Blockchain storage error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/verify', methods=['POST'])
+@app.route('/verify', methods=['POST', 'OPTIONS'])
 def verify_certificate():
     """Verify certificate existence on blockchain"""
+
+    # Handle preflight request (CORS)
+    if request.method == 'OPTIONS':
+        return '', 200  # Respond OK for preflight requests
+
     try:
         metadata_hash = request.json.get("metadata_hash")
-        
+
         if not metadata_hash:
             return jsonify({"error": "Metadata hash required"}), 400
 
-        # Validate hash format
-        if not re.fullmatch(r'^[a-fA-F0-9]{64}$', metadata_hash):
-            return jsonify({"error": "Invalid hash format"}), 400
+        print(f"Received metadata hash: {metadata_hash}")  # Debugging log
 
         try:
-            # Convert to bytes and query blockchain
-            hash_bytes = bytes.fromhex(metadata_hash)
+            # Convert hash to bytes32 format
+            hash_bytes = bytes.fromhex(metadata_hash.replace("0x", ""))  # Remove 0x prefix if present
+
             cid = contract.functions.getCertificate(hash_bytes).call()
-            
+
             if cid and cid.strip():
                 return jsonify({
                     "valid": True,
@@ -305,11 +299,12 @@ def verify_certificate():
                 return jsonify({"valid": False, "message": "Certificate not found"}), 404
                 
         except Exception as e:
-            app.logger.error(f"Contract call failed: {str(e)}")
+            print(f"Contract call failed: {str(e)}")  # Debugging log
             return jsonify({"error": "Blockchain query failed"}), 500
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)  # Start development server
