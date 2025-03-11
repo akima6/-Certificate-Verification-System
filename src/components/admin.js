@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import Web3 from 'web3';
 import axios from 'axios';
@@ -181,7 +182,10 @@ const Admin = () => {
   
       // Send the transaction to the smart contract
       const receipt = await contract.methods.storeCertificate(cid, bytes32Hash)
-        .send({ from: userAddress, gas: 5000000 });
+        .send({ 
+          from: userAddress, 
+          gas: 5000000 
+        });
   
       console.log('Transaction successful:', receipt);
       setTransactionHash(receipt.transactionHash);
@@ -189,26 +193,37 @@ const Admin = () => {
       setStatusType('success');
     } catch (error) {
       console.error('Transaction failed:', error);
-  
-      // Handle the revert error more clearly
+      let errorMessage = "Certificate already exists on blockchain";
+
+      // Extract meaningful error message
       if (error.message.includes('revert')) {
-        console.error('Transaction reverted. Check contract logic or inputs.');
+        if (error.message.includes('Certificate already exists')) {
+          errorMessage = "Certificate already exists on blockchain";
+        } else if (error.message.includes('Not authorized')) {
+          errorMessage = "Only admin can store certificates";
+        }
+      } else if (error.code === 'INSUFFICIENT_GAS') {
+        errorMessage = "Transaction ran out of gas";
+      } else if (error.code === 4001) {
+        errorMessage = "Transaction rejected by user";
       }
-  
-      setUploadStatus("Certificate already exists.");
+
+      // Update status with specific error
+      setUploadStatus(errorMessage);
       setStatusType('error');
+    } finally {
+      setIsProcessing(false);
     }
-  
-    setIsProcessing(false);
   };
 
   const renderMetadataTable = () => {
     if (!extractedDetails) return null;
     
-    // Filter out the metadata_hash field as we display it separately
-    const filteredDetails = Object.entries(extractedDetails).filter(
-      ([key]) => key !== 'metadata_hash'
-    );
+    // Define correct order for metadata display
+    const fieldOrder = ['name', 'register_number', 'college', 'passing_date', 'cgpa'];
+    const filteredDetails = fieldOrder
+      .map(key => [key, extractedDetails[key]])
+      .filter(([key, value]) => value); // Ensures only non-empty fields are displayed
     
     return (
       <div className="metadata-container">
@@ -292,31 +307,24 @@ const Admin = () => {
         )}
         
         {transactionHash && (
-          <div className="metadata-group">
-            <div className="metadata-label">Transaction Hash</div>
-            <div className="hash-value">
-              {transactionHash}
-              <a
-                href={`https://etherscan.io/tx/${transactionHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hash-link"
-              >
-                View on Etherscan
-              </a>
-              <button 
-                className="copy-button" 
-                onClick={() => copyToClipboard(transactionHash)}
-                title="Copy to clipboard"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-          </div>
-        )}
+  <div className="metadata-group">
+    <div className="metadata-label">Transaction Hash</div>
+    <div className="hash-value">
+      {transactionHash}
+      <button 
+        className="copy-button" 
+        onClick={() => copyToClipboard(transactionHash)}
+        title="Copy to clipboard"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+)}
+
       </>
     );
   };
