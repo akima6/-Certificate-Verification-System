@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import './user.css';
+import Web3 from "web3";
 
 const User = () => {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -46,8 +47,8 @@ const User = () => {
 
   const verifyCertificate = async () => {
     if (!extractedDetails?.metadata_hash) {
-      alert("No metadata to verify");
-      return;
+        alert("No metadata to verify");
+        return;
     }
 
     setIsProcessing(true);
@@ -55,25 +56,28 @@ const User = () => {
     setStatusType('processing');
 
     try {
-      const response = await axios.post("http://127.0.0.1:5000/verify", {
-        metadata_hash: extractedDetails.metadata_hash
-      });
+        const web3 = new Web3(window.ethereum);
+        const hashedMetadata = web3.utils.soliditySha3(extractedDetails.metadata_hash); // Hash it
 
-      if (response.data.cid) {
-        setCid(response.data.cid);
-        setVerificationStatus('✅ Certificate is valid!');
-        setStatusType('success');
-      } else {
-        setVerificationStatus('❌ Certificate not found in blockchain records');
-        setStatusType('error');
-      }
+        const response = await axios.post("http://127.0.0.1:5000/verify", {
+            metadata_hash: hashedMetadata  // Send hashed metadata
+        });
+
+        if (response.data.cid) {
+            setCid(response.data.cid);
+            setVerificationStatus('✅ Certificate is valid!');
+            setStatusType('success');
+        } else {
+            setVerificationStatus('❌ Certificate not found in blockchain records');
+            setStatusType('error');
+        }
     } catch (error) {
-      console.error("Verification error:", error);
-      setVerificationStatus('❌ Certificate verification failed');
-      setStatusType('error');
+        console.error("Verification error:", error);
+        setVerificationStatus('❌ Certificate verification failed');
+        setStatusType('error');
     }
     setIsProcessing(false);
-  };
+};
 
   return (
     <div className="container">
