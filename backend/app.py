@@ -281,8 +281,6 @@ def verify_certificate():
         if not metadata_hash:
             return jsonify({"error": "Metadata hash required"}), 400
 
-        print(f"Received metadata hash: {metadata_hash}")  # Debugging log
-
         try:
             # Convert hash to bytes32 format
             hash_bytes = bytes.fromhex(metadata_hash.replace("0x", ""))  # Remove 0x prefix if present
