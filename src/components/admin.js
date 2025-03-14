@@ -237,9 +237,22 @@ const Admin = () => {
         const formattedMetadataHash = web3.utils.soliditySha3(metadataHash);
 
         const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+        // Check if certificate already exists by accessing the mapping
+        const certificate = await contract.methods.certificates(formattedMetadataHash).call();
+        const existingCid = certificate.ipfsCid;
+
+        if (existingCid && existingCid.length > 0) {
+            alert("Certificate already stored!");
+            setUploadStatus("Certificate already stored!");
+            setStatusType("error");
+            setIsProcessing(false);
+            return;
+        }
+
+        // Proceed with storing the certificate
         const txnData = contract.methods.storeCertificate(cid, formattedMetadataHash).encodeABI();
 
-        // Build transaction object correctly
         const txn = {
             from: adminAddress,
             to: contractAddress,
@@ -247,12 +260,9 @@ const Admin = () => {
             data: txnData,
         };
 
-        // Send transaction using web3
         const txReceipt = await web3.eth.sendTransaction(txn);
-
         console.log("Transaction successful:", txReceipt.transactionHash);
 
-        // Send transaction hash to backend for verification/storage
         const response = await axios.post("http://127.0.0.1:5000/store_on_blockchain", {
             txHash: txReceipt.transactionHash,
             metadataHash: formattedMetadataHash,
@@ -268,13 +278,15 @@ const Admin = () => {
         }
     } catch (error) {
         console.error("Transaction failed:", error);
-        setUploadStatus("Certificate already exists on the blockchain!");
+        setUploadStatus(error.message.includes("Certificate already stored") 
+            ? "Certificate already exists!" 
+            : "Failed to upload to blockchain!");
         setStatusType("error");
     } finally {
         setIsProcessing(false);
     }
 };
-
+  
   
   const renderMetadataTable = () => {
     if (!extractedDetails) return null;
