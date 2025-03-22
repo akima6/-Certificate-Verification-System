@@ -1,4 +1,5 @@
 
+
 from flask import Flask, request, jsonify, session  # Flask web framework components
 from flask_cors import CORS  # Handle Cross-Origin Resource Sharing
 from flask_session import Session  # Server-side session management
@@ -51,18 +52,6 @@ contract = web3.eth.contract(address=contract_address, abi=abi)
 # Configure Tesseract OCR executable path
 pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_PATH")
 
-# Image processing and text extraction functions
-def extract_text_from_image(image):
-    """Extract text from image using OCR with preprocessing"""
-    # Convert to grayscale for better OCR accuracy
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Reduce noise using Gaussian blur
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Adaptive thresholding to binarize image
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    # Use Tesseract with page segmentation mode 6 (single uniform block)
-    return pytesseract.image_to_string(thresh, config="--psm 6")
-
 def extract_text_from_pdf(pdf_path):
     """Extract text from PDF document"""
     text = ""
@@ -76,8 +65,6 @@ def extract_text_from_pdf(pdf_path):
     except Exception as e:
         app.logger.error(f"PDF extraction error: {str(e)}")
         return ""
-
-
 
 
 def extract_certificate_details(text):
@@ -177,11 +164,6 @@ def upload():
         # Process based on file type
         if file.filename.lower().endswith('.pdf'):
             extracted_text = extract_text_from_pdf(temp_path)
-        else:
-            # Open image and convert to OpenCV format
-            img = Image.open(temp_path)
-            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            extracted_text = extract_text_from_image(img_cv)
         
         # Clean up temporary file
         os.remove(temp_path)
@@ -267,26 +249,61 @@ def store_on_blockchain():
         app.logger.error(f"Blockchain storage error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/manual-entry', methods=['POST'])
+def manual_entry():
+    """Handle manual certificate data entry"""
+    data = request.json
+    required_fields = ['name', 'register_number', 'passing_date', 'college', 'cgpa']
+    
+    # Validate required fields
+    for field in required_fields:
+        if not data.get(field):
+            return jsonify({
+                "error": f"Missing required field: {field}"
+            }), 400
+
+    # Create certificate details dictionary
+    certificate_details = {
+        'name': data['name'].strip(),
+        'register_number': data['register_number'].strip(),
+        'passing_date': data['passing_date'].strip(),
+        'college': data['college'].strip(),
+        'cgpa': data['cgpa'].strip()
+    }
+
+    # Generate metadata hash
+    metadata_hash = generate_metadata_hash(certificate_details)
+    
+    # Return combined response (original case + hash)
+    return jsonify({
+        **certificate_details,
+        "metadata_hash": metadata_hash
+    })
+
+
 @app.route('/verify', methods=['POST', 'OPTIONS'])
 def verify_certificate():
-    """Verify certificate existence on blockchain"""
-
-    # Handle preflight request (CORS)
     if request.method == 'OPTIONS':
         return '', 200  # Respond OK for preflight requests
 
     try:
         metadata_hash = request.json.get("metadata_hash")
-
         if not metadata_hash:
             return jsonify({"error": "Metadata hash required"}), 400
 
+        # Validate SHA-256 format (bytes32)
+        if not re.fullmatch(r'^0x[a-fA-F0-9]{64}$', metadata_hash):
+            return jsonify({"error": "Invalid metadata hash format"}), 400
+
+        # Convert hash to bytes32 format
         try:
-            # Convert hash to bytes32 format
-            hash_bytes = bytes.fromhex(metadata_hash.replace("0x", ""))  # Remove 0x prefix if present
+            hash_bytes = bytes.fromhex(metadata_hash.replace("0x", ""))
+        except Exception as e:
+            return jsonify({"error": f"Failed to process metadata hash: {str(e)}"}), 400
 
+        # Call smart contract
+        try:
             cid = contract.functions.getCertificate(hash_bytes).call()
-
             if cid and cid.strip():
                 return jsonify({
                     "valid": True,
@@ -295,14 +312,12 @@ def verify_certificate():
                 })
             else:
                 return jsonify({"valid": False, "message": "Certificate not found"}), 404
-                
         except Exception as e:
             print(f"Contract call failed: {str(e)}")  # Debugging log
             return jsonify({"error": "Blockchain query failed"}), 500
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True)  # Start development server
